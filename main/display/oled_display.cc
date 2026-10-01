@@ -103,6 +103,22 @@ void OledDisplay::SetupUI() {
 }
 
 OledDisplay::~OledDisplay() {
+    if (emotion_timer_ != nullptr) {
+        lv_timer_delete(emotion_timer_);
+        emotion_timer_ = nullptr;
+    }
+
+    if (left_eye_ != nullptr) {
+        lv_obj_del(left_eye_);
+        left_eye_ = nullptr;
+        left_pupil_ = nullptr;
+    }
+    if (right_eye_ != nullptr) {
+        lv_obj_del(right_eye_);
+        right_eye_ = nullptr;
+        right_pupil_ = nullptr;
+    }
+
     if (content_ != nullptr) {
         lv_obj_del(content_);
     }
@@ -180,6 +196,9 @@ void OledDisplay::SetupUI_128x64() {
     auto screen = lv_screen_active();
     lv_obj_set_style_text_font(screen, text_font, 0);
     lv_obj_set_style_text_color(screen, lv_color_black(), 0);
+    normal_screen_bg_color_ = lv_obj_get_style_bg_color(screen, LV_PART_MAIN);
+    normal_screen_bg_opa_ = lv_obj_get_style_bg_opa(screen, LV_PART_MAIN);
+    screen_background_saved_ = true;
 
     /* Container */
     container_ = lv_obj_create(screen);
@@ -258,7 +277,7 @@ void OledDisplay::SetupUI_128x64() {
     lv_obj_set_style_flex_main_place(content_, LV_FLEX_ALIGN_CENTER, 0);
 
     content_left_ = lv_obj_create(content_);
-    lv_obj_set_size(content_left_, 32, LV_SIZE_CONTENT);
+    lv_obj_set_size(content_left_, 32, 32);
     lv_obj_set_style_pad_all(content_left_, 0, 0);
     lv_obj_set_style_border_width(content_left_, 0, 0);
 
@@ -267,6 +286,7 @@ void OledDisplay::SetupUI_128x64() {
     lv_label_set_text(emotion_label_, MATERIAL_SYMBOLS_ROBOT_2);
     lv_obj_center(emotion_label_);
     lv_obj_set_style_pad_top(emotion_label_, 8, 0);
+    CreateAnimatedFace(screen);
 
     content_right_ = lv_obj_create(content_);
     lv_obj_set_size(content_right_, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
@@ -314,6 +334,9 @@ void OledDisplay::SetupUI_128x32() {
 
     auto screen = lv_screen_active();
     lv_obj_set_style_text_font(screen, text_font, 0);
+    normal_screen_bg_color_ = lv_obj_get_style_bg_color(screen, LV_PART_MAIN);
+    normal_screen_bg_opa_ = lv_obj_get_style_bg_opa(screen, LV_PART_MAIN);
+    screen_background_saved_ = true;
 
     /* Container */
     container_ = lv_obj_create(screen);
@@ -334,6 +357,7 @@ void OledDisplay::SetupUI_128x32() {
     lv_obj_set_style_text_font(emotion_label_, large_icon_font, 0);
     lv_label_set_text(emotion_label_, MATERIAL_SYMBOLS_ROBOT_2);
     lv_obj_center(emotion_label_);
+    CreateAnimatedFace(screen);
 
     /* Right side */
     side_bar_ = lv_obj_create(container_);
@@ -392,6 +416,185 @@ void OledDisplay::SetupUI_128x32() {
                                    LV_PART_MAIN);
 }
 
+void OledDisplay::CreateAnimatedFace(lv_obj_t* parent) {
+    animated_face_ = parent;
+    left_eye_ = lv_obj_create(animated_face_);
+    right_eye_ = lv_obj_create(animated_face_);
+    left_pupil_ = lv_obj_create(left_eye_);
+    right_pupil_ = lv_obj_create(right_eye_);
+    const int eye_size = std::min(36, height_ - 4);
+    const int pupil_size = std::max(6, eye_size / 3);
+    for (auto* eye : {left_eye_, right_eye_}) {
+        lv_obj_remove_style_all(eye);
+        lv_obj_set_size(eye, eye_size, eye_size);
+        lv_obj_set_style_radius(eye, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(eye, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(eye, 0, 0);
+        lv_obj_add_flag(eye, LV_OBJ_FLAG_HIDDEN);
+    }
+    for (auto* pupil : {left_pupil_, right_pupil_}) {
+        lv_obj_remove_style_all(pupil);
+        lv_obj_set_size(pupil, pupil_size, pupil_size);
+        lv_obj_set_style_radius(pupil, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_color(pupil, lv_color_white(), 0);
+        lv_obj_set_style_bg_opa(pupil, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_width(pupil, 0, 0);
+    }
+
+    if (animated_emotion_) {
+        emotion_timer_ = lv_timer_create(EmotionTimerCallback, blink_interval_ms_, this);
+        UpdateAnimatedFace();
+    }
+}
+
+void OledDisplay::UpdateAnimatedFace() {
+    if (emotion_label_ == nullptr || left_eye_ == nullptr || right_eye_ == nullptr ||
+        animated_face_ == nullptr) {
+        return;
+    }
+
+    if (!animated_emotion_) {
+        gaze_offset_x_ = 0;
+        lv_obj_add_flag(left_eye_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(right_eye_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(container_, LV_OBJ_FLAG_HIDDEN);
+        if (height_ == 64 && status_bar_ != nullptr) {
+            lv_obj_clear_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (low_battery_popup_ != nullptr && low_battery_was_visible_) {
+            lv_obj_clear_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+        }
+        low_battery_was_visible_ = false;
+        if (screen_background_saved_) {
+            lv_obj_set_style_bg_color(animated_face_, normal_screen_bg_color_, 0);
+            lv_obj_set_style_bg_opa(animated_face_, normal_screen_bg_opa_, 0);
+        }
+        lv_obj_clear_flag(emotion_label_, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+
+    lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+    if (height_ == 64 && status_bar_ != nullptr) {
+        lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (low_battery_popup_ != nullptr) {
+        lv_obj_add_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_set_style_bg_color(animated_face_, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(animated_face_, LV_OPA_COVER, 0);
+    lv_obj_add_flag(emotion_label_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(left_eye_, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(right_eye_, LV_OBJ_FLAG_HIDDEN);
+
+    const int eye_size = std::min(36, height_ - 4);
+    uint32_t emotion_interval_ms = blink_interval_ms_;
+    int eye_height = eye_size;
+    int pupil_size = std::max(6, eye_size / 3);
+    int pupil_y = 0;
+    if (current_emotion_ == "sleepy" || current_emotion_ == "sad" ||
+        current_emotion_ == "crying") {
+        eye_height = eye_size * 2 / 3;
+        pupil_y = 4;
+        emotion_interval_ms = blink_interval_ms_ * 3 / 2;
+        if (current_emotion_ == "sleepy") {
+            eye_height = eye_size / 2;
+        }
+    } else if (current_emotion_ == "happy" || current_emotion_ == "excited" ||
+               current_emotion_ == "laughing" || current_emotion_ == "funny" ||
+               current_emotion_ == "loving" || current_emotion_ == "kissy" ||
+               current_emotion_ == "silly" || current_emotion_ == "embarrassed" ||
+               current_emotion_ == "confident" || current_emotion_ == "delicious") {
+        eye_height = eye_size * 5 / 6;
+        pupil_size = std::max(6, eye_size / 4);
+        pupil_y = -2;
+        emotion_interval_ms = blink_interval_ms_ * 2 / 3;
+    } else if (current_emotion_ == "surprised" || current_emotion_ == "shocked") {
+        pupil_size = std::max(10, eye_size / 2);
+        emotion_interval_ms = blink_interval_ms_ * 3 / 4;
+    } else if (current_emotion_ == "angry") {
+        eye_height = eye_size / 2;
+        pupil_y = -1;
+        emotion_interval_ms = blink_interval_ms_ * 5 / 4;
+    } else if (current_emotion_ == "thinking" || current_emotion_ == "confused" ||
+               current_emotion_ == "relaxed" || current_emotion_ == "cool") {
+        pupil_y = -5;
+        emotion_interval_ms = blink_interval_ms_ * 5 / 4;
+    }
+
+    const int eye_gap = 8;
+    const int visible_height = eyes_closed_ ? 3 : eye_height;
+    lv_obj_set_size(left_eye_, eye_size, visible_height);
+    lv_obj_set_size(right_eye_, eye_size, visible_height);
+    lv_obj_align(left_eye_, LV_ALIGN_CENTER, -(eye_size / 2 + eye_gap / 2) + gaze_offset_x_, 0);
+    lv_obj_align(right_eye_, LV_ALIGN_CENTER, eye_size / 2 + eye_gap / 2 + gaze_offset_x_, 0);
+    if (eyes_closed_) {
+        lv_obj_add_flag(left_pupil_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(right_pupil_, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        const int pupil_size_limit = std::max(4, eye_height - 4);
+        pupil_size = std::min(pupil_size, pupil_size_limit);
+        lv_obj_set_size(left_pupil_, pupil_size, pupil_size);
+        lv_obj_set_size(right_pupil_, pupil_size, pupil_size);
+        lv_obj_clear_flag(left_pupil_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(right_pupil_, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_align(left_pupil_, LV_ALIGN_CENTER, gaze_offset_x_ / 2, pupil_y);
+        lv_obj_align(right_pupil_, LV_ALIGN_CENTER, gaze_offset_x_ / 2, pupil_y);
+    }
+
+    if (emotion_timer_ != nullptr && !eyes_closed_) {
+        lv_timer_set_period(emotion_timer_, emotion_interval_ms);
+    }
+}
+
+void OledDisplay::EmotionTimerCallback(lv_timer_t* timer) {
+    auto* display = static_cast<OledDisplay*>(lv_timer_get_user_data(timer));
+    display->eyes_closed_ = !display->eyes_closed_;
+    if (!display->eyes_closed_) {
+        const bool gaze_animation = display->current_emotion_ == "neutral" ||
+                                    display->current_emotion_ == "confused" ||
+                                    display->current_emotion_ == "thinking";
+        if (gaze_animation) {
+            display->gaze_offset_x_ = display->gaze_offset_x_ == 0
+                                          ? -5
+                                          : (display->gaze_offset_x_ == -5 ? 5 : 0);
+        } else {
+            display->gaze_offset_x_ = 0;
+        }
+    }
+    display->UpdateAnimatedFace();
+    if (display->eyes_closed_) {
+        lv_timer_set_period(timer, 120);
+    }
+}
+
+bool OledDisplay::SetEmotionMode(const std::string& mode, uint32_t blink_interval_ms) {
+    if (mode != "default" && mode != "animated") {
+        return false;
+    }
+
+    DisplayLockGuard lock(this);
+    if (!lock) {
+        return false;
+    }
+    if (!animated_emotion_ && mode == "animated" && low_battery_popup_ != nullptr) {
+        low_battery_was_visible_ = !lv_obj_has_flag(low_battery_popup_, LV_OBJ_FLAG_HIDDEN);
+    }
+    animated_emotion_ = mode == "animated";
+    blink_interval_ms_ = std::clamp<uint32_t>(blink_interval_ms, 500, 30000);
+    eyes_closed_ = false;
+
+    if (emotion_timer_ != nullptr) {
+        lv_timer_delete(emotion_timer_);
+        emotion_timer_ = nullptr;
+    }
+    if (animated_emotion_ && emotion_label_ != nullptr && left_eye_ != nullptr) {
+        emotion_timer_ = lv_timer_create(EmotionTimerCallback, blink_interval_ms_, this);
+    }
+    UpdateAnimatedFace();
+    return true;
+}
+
 void OledDisplay::SetEmotion(const char* emotion) {
     auto lvgl_theme = static_cast<LvglTheme*>(current_theme_);
     const char* utf8 = noto_emoji_get_utf8(emotion);
@@ -401,6 +604,7 @@ void OledDisplay::SetEmotion(const char* emotion) {
         emotion_font = lvgl_theme->large_icon_font()->font();
     }
     DisplayLockGuard lock(this);
+    current_emotion_ = emotion != nullptr ? emotion : "neutral";
     if (emotion_label_ == nullptr) {
         return;
     }
@@ -411,6 +615,7 @@ void OledDisplay::SetEmotion(const char* emotion) {
         lv_obj_set_style_text_font(emotion_label_, lvgl_theme->emoji_font()->font(), 0);
         lv_label_set_text(emotion_label_, NOTO_EMOJI_NEUTRAL);
     }
+    UpdateAnimatedFace();
 }
 
 void OledDisplay::SetTheme(Theme* theme) {

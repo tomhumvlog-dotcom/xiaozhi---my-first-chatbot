@@ -49,11 +49,20 @@
 #error "OLED display type is not selected"
 #endif
 
-#define DISPLAY_MIRROR_X true
-#define DISPLAY_MIRROR_Y true
+#define DISPLAY_MIRROR_X false
+#define DISPLAY_MIRROR_Y false
 
 
 // A MCP Test: Control a lamp
 #define LAMP_GPIO GPIO_NUM_18
+
+// L298N motor-driver inputs. GPIOs 8-11 are not used by this board config.
+#define MOTOR_M1_IN1_GPIO GPIO_NUM_8
+#define MOTOR_M1_IN2_GPIO GPIO_NUM_9
+#define MOTOR_M2_IN1_GPIO GPIO_NUM_10
+#define MOTOR_M2_IN2_GPIO GPIO_NUM_11
+
+// Calibrate this duration so the chassis turns approximately 360 degrees.
+#define MOTOR_TURN_360_DURATION_MS 1000
 
 #endif // _BOARD_CONFIG_H_
